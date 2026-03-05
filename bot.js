@@ -103,9 +103,25 @@ bot.onText(/\/debug/, async (msg) => {
   await bot.sendMessage(chatId, debugInfo, { parse_mode: 'HTML' });
 });
 
+bot.onText(/\/help/, (msg) => {
+  const chatId = msg.chat.id;
+  const helpText = `📖 **Справка по боту Cleaning Exam 2.0**\n\n` +
+    `🔹 **/start** — Регистрация и главное меню\n` +
+    `🔹 **/debug** — Техническая информация о профиле\n` +
+    `🔹 **/admin** — Панель управления (только для админов)\n\n` +
+    `**Как пройти экзамен?**\n` +
+    `1. Нажмите "📝 Начать экзамен".\n` +
+    `2. Прочитайте правила и подтвердите участие.\n` +
+    `3. Ответьте на 15 вопросов (по 15 сек на каждый).\n` +
+    `4. Получите результат мгновенно!`;
+  bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
+});
+
 bot.onText(/\/admin/, (msg) => {
   if (isAdmin(msg.chat.id)) {
     showAdminPanel(msg.chat.id);
+  } else {
+    bot.sendMessage(msg.chat.id, '⛔️ У вас нет прав доступа к админ-панели.');
   }
 });
 
@@ -179,109 +195,135 @@ bot.on('polling_error', (error) => {
 
 // Inline Buttons Handling
 bot.on('callback_query', async (query) => {
-  bot.answerCallbackQuery(query.id).catch(() => {});
-  if (!query.message) return;
-  const chatId = String(query.message.chat.id);
+  const chatId = String(query.from.id);
   const data = query.data;
   
-  console.log(`[DEBUG] Callback received: ${data} from ${chatId}`);
+  console.log(`[DEBUG] Callback: ${data} from ${chatId} (${query.from.first_name})`);
 
   try {
+    // 1. Start Exam Flow
     if (data === 'start_exam_rules') {
       const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
       if (!user) {
+        await bot.answerCallbackQuery(query.id, { text: '❌ Профиль не найден', show_alert: true });
         await bot.sendMessage(chatId, '❌ Ошибка: профиль не найден. Попробуйте /start');
-        bot.answerCallbackQuery(query.id).catch(() => {});
         return;
       }
 
       const lastResult = db.prepare('SELECT * FROM results WHERE chatId = ? ORDER BY finishedAt DESC LIMIT 1').get(chatId);
       
       if (lastResult && lastResult.status === 'PASS' && !user.canRetry) {
-        await bot.sendMessage(chatId, '✅ Вы уже успешно сдали экзамен!');
-        bot.answerCallbackQuery(query.id).catch(() => {});
+        await bot.answerCallbackQuery(query.id, { text: '✅ Экзамен уже сдан!', show_alert: true });
         return;
       }
       
       if (lastResult && lastResult.status === 'FAIL' && !user.canRetry) {
-        await bot.sendMessage(chatId, '❌ Вы не сдали экзамен. Дождитесь разрешения администратора на пересдачу.');
-        bot.answerCallbackQuery(query.id).catch(() => {});
+        await bot.answerCallbackQuery(query.id, { text: '❌ Пересдача пока недоступна', show_alert: true });
         return;
       }
 
-      const rules = `📜 **Правила экзамена:**\n\n` +
-        `1. Всего 15 вопросов.\n` +
-        `2. На каждый вопрос дается **15 секунд**.\n` +
-        `3. Если время выйдет — ответ считается неверным.\n` +
-        `4. Проходной балл: **${process.env.PASS_SCORE || 13} из 15**.\n\n` +
-        `Готовы начать?`;
+      await bot.answerCallbackQuery(query.id, { text: '⏳ Подготовка вопросов...' });
+
+      const rules = `📝 **ПОДГОТОВКА К ЭКЗАМЕНУ**\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `• Вопросов: **15**\n` +
+        `• Время: **15 сек/вопрос**\n` +
+        `• Проходной балл: **${process.env.PASS_SCORE || 13}**\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `Нажимая кнопку ниже, вы подтверждаете готовность.`;
 
       const webAppUrl = `${APP_URL}/exam?chatId=${chatId}`;
-      console.log(`[DEBUG] Opening WebApp for ${chatId}: ${webAppUrl}`);
-
       await bot.sendMessage(chatId, rules, {
         parse_mode: 'Markdown',
         reply_markup: {
-          inline_keyboard: [[{ text: '✅ Я согласен, начать!', web_app: { url: webAppUrl } }]]
+          inline_keyboard: [[{ text: '🚀 НАЧАТЬ ЭКЗАМЕН', web_app: { url: webAppUrl } }]]
         }
       });
-    } else if (data === 'my_result') {
+    } 
+    
+    // 2. User Info
+    else if (data === 'my_result') {
+      await bot.answerCallbackQuery(query.id);
       const result = db.prepare('SELECT * FROM results WHERE chatId = ? ORDER BY finishedAt DESC LIMIT 1').get(chatId);
       if (result) {
-        await bot.sendMessage(chatId, `📊 **Ваш последний результат:**\n\n` +
-          `Результат: ${result.score}/${result.total}\n` +
-          `Статус: ${result.status === 'PASS' ? '✅ СДАНО' : '❌ НЕ СДАНО'}\n` +
-          `Дата: ${fmtDate(result.finishedAt)}`, { parse_mode: 'Markdown' });
+        const text = `📊 **ВАШ РЕЗУЛЬТАТ**\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `👤 Кандидат: ${query.from.first_name}\n` +
+          `🎯 Баллы: **${result.score} / ${result.total}**\n` +
+          `📢 Статус: ${result.status === 'PASS' ? '✅ СДАНО' : '❌ НЕ СДАНО'}\n` +
+          `📅 Дата: ${fmtDate(result.finishedAt)}\n` +
+          `━━━━━━━━━━━━━━━━━━`;
+        await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
       } else {
-        await bot.sendMessage(chatId, 'У вас еще нет результатов экзамена.');
+        await bot.sendMessage(chatId, 'ℹ️ У вас еще нет завершенных экзаменов.');
       }
-    } else if (data === 'show_rules') {
-      await bot.sendMessage(chatId, `📜 **Правила экзамена:**\n\n` +
-        `• 15 вопросов по клинингу и химии.\n` +
-        `• 15 секунд на раздумья над каждым вопросом.\n` +
-        `• Проходной балл: ${process.env.PASS_SCORE || 13}.\n` +
-        `• Пересдача только после одобрения администратором.`);
-    } else if (data === 'admin_panel') {
-      showAdminPanel(chatId);
-    } else if (data === 'admin_last_10') {
-      const last = db.prepare(`
-        SELECT r.*, u.fio, u.phone 
-        FROM results r 
-        JOIN users u ON r.chatId = u.chatId 
-        ORDER BY r.finishedAt DESC LIMIT 10
-      `).all();
-      
-      if (last.length === 0) {
-        await bot.sendMessage(chatId, 'Результатов пока нет.');
-      } else {
-        let text = '📊 **Последние 10 результатов:**\n\n';
-        last.forEach(r => {
-          text += `${r.status === 'PASS' ? '✅' : '❌'} ${r.fio} (${r.score}/${r.total})\n` +
-                  `🆔 <code>${r.chatId}</code> | 🕒 ${fmtDate(r.finishedAt)}\n\n`;
-        });
-        await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
+    } 
+    
+    else if (data === 'show_rules') {
+      await bot.answerCallbackQuery(query.id);
+      const rulesText = `📜 **ПРАВИЛА И УСЛОВИЯ**\n\n` +
+        `• Экзамен проверяет знания химии, технологий и инвентаря.\n` +
+        `• Система автоматически завершит вопрос через 15 секунд.\n` +
+        `• Результаты сохраняются в базе и доступны администратору.\n` +
+        `• Повторная попытка возможна только после сброса админом.`;
+      await bot.sendMessage(chatId, rulesText, { parse_mode: 'Markdown' });
+    }
+
+    // 3. Admin Actions (with security check)
+    else if (data.startsWith('admin_')) {
+      if (!isAdmin(chatId)) {
+        await bot.answerCallbackQuery(query.id, { text: '⛔️ Доступ запрещен', show_alert: true });
+        return;
       }
-    } else if (data === 'admin_retry_req') {
-      await bot.sendMessage(chatId, 'Введите 🆔 chatId кандидата, которому нужно разрешить пересдачу:');
-      userStates.set(chatId, { step: 'admin_retry' });
-    } else if (data === 'admin_find_req') {
-      await bot.sendMessage(chatId, 'Введите 🆔 chatId или 📞 номер телефона для поиска:');
-      userStates.set(chatId, { step: 'admin_find' });
-    } else if (data === 'admin_reset_req') {
-      await bot.sendMessage(chatId, '⚠️ Вы уверены, что хотите сбросить ВСЕХ кандидатов?', {
-        reply_markup: {
-          inline_keyboard: [[{ text: '🔥 ДА, СБРОСИТЬ ВСЁ', callback_data: 'admin_reset_confirm' }, { text: '❌ Отмена', callback_data: 'admin_panel' }]]
+      await bot.answerCallbackQuery(query.id);
+
+      if (data === 'admin_panel') {
+        showAdminPanel(chatId);
+      } else if (data === 'admin_last_10') {
+        const last = db.prepare(`
+          SELECT r.*, u.fio, u.phone 
+          FROM results r 
+          JOIN users u ON r.chatId = u.chatId 
+          ORDER BY r.finishedAt DESC LIMIT 10
+        `).all();
+        
+        if (last.length === 0) {
+          await bot.sendMessage(chatId, '📭 Список результатов пуст.');
+        } else {
+          let text = `📋 **ПОСЛЕДНИЕ 10 РЕЗУЛЬТАТОВ**\n\n`;
+          last.forEach((r, i) => {
+            text += `${i+1}. ${r.status === 'PASS' ? '✅' : '❌'} **${r.fio}**\n` +
+                    `   Score: ${r.score}/${r.total} | 🕒 ${fmtDate(r.finishedAt)}\n` +
+                    `   ID: <code>${r.chatId}</code>\n\n`;
+          });
+          await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
         }
-      });
-    } else if (data === 'admin_reset_confirm') {
-      db.prepare('DELETE FROM users').run();
-      db.prepare('DELETE FROM results').run();
-      db.prepare('DELETE FROM sessions').run();
-      await bot.sendMessage(chatId, '🧹 База данных полностью очищена.');
-      showAdminPanel(chatId);
+      } else if (data === 'admin_retry_req') {
+        await bot.sendMessage(chatId, '⌨️ Введите 🆔 **chatId** кандидата для разрешения пересдачи:');
+        userStates.set(chatId, { step: 'admin_retry' });
+      } else if (data === 'admin_find_req') {
+        await bot.sendMessage(chatId, '🔍 Введите **chatId** или **номер телефона** для поиска:');
+        userStates.set(chatId, { step: 'admin_find' });
+      } else if (data === 'admin_reset_req') {
+        await bot.sendMessage(chatId, '⚠️ **ПОДТВЕРЖДЕНИЕ СБРОСА**\n\nВы действительно хотите полностью очистить базу данных? Это действие необратимо.', {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '🔥 ДА, УДАЛИТЬ ВСЁ', callback_data: 'admin_reset_confirm' }],
+              [{ text: '❌ ОТМЕНА', callback_data: 'admin_panel' }]
+            ]
+          }
+        });
+      } else if (data === 'admin_reset_confirm') {
+        db.prepare('DELETE FROM users').run();
+        db.prepare('DELETE FROM results').run();
+        db.prepare('DELETE FROM sessions').run();
+        await bot.sendMessage(chatId, '🧹 **БАЗА ДАННЫХ ОЧИЩЕНА**\nВсе пользователи и результаты удалены.');
+        showAdminPanel(chatId);
+      }
     }
   } catch (err) {
-    console.error(`[ERROR] Callback handler failed: ${err.message}`);
+    console.error(`[CRITICAL ERROR] Callback: ${err.message}`);
+    await bot.answerCallbackQuery(query.id, { text: '⚠️ Произошла ошибка', show_alert: true }).catch(() => {});
   }
 });
 
@@ -299,18 +341,31 @@ function showMainMenu(chatId) {
 }
 
 function showAdminPanel(chatId) {
-  bot.sendMessage(chatId, '⚙️ **Панель администратора**', {
+  const text = `🛠 **ПАНЕЛЬ АДМИНИСТРАТОРА**\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `Выберите действие для управления кандидатами и базой данных:`;
+  
+  bot.sendMessage(chatId, text, {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [{ text: '📊 Последние 10 результатов', callback_data: 'admin_last_10' }],
-        [{ text: '👤 Найти кандидата', callback_data: 'admin_find_req' }],
+        [{ text: '🔍 Найти кандидата', callback_data: 'admin_find_req' }],
         [{ text: '🔄 Разрешить пересдачу', callback_data: 'admin_retry_req' }],
-        [{ text: '🧹 Сбросить всё', callback_data: 'admin_reset_req' }]
+        [{ text: '🧹 Очистить всю базу', callback_та: 'admin_reset_req' }],
+        [{ text: '🏠 Вернуться в меню', callback_data: 'show_main_menu' }]
       ]
     }
   });
 }
+
+// Add handler for returning to main menu
+bot.on('callback_query', async (query) => {
+  if (query.data === 'show_main_menu') {
+    await bot.answerCallbackQuery(query.id);
+    showMainMenu(String(query.from.id));
+  }
+});
 
 // Export for server.js
 module.exports = { bot, db, fmtDate, isAdmin, ADMIN_IDS };

@@ -53,7 +53,11 @@ db.exec(`
   );
 `);
 
-const bot = new TelegramBot(TOKEN, { polling: true });
+const bot = new TelegramBot(TOKEN, { polling: process.env.DISABLE_POLLING !== 'true' });
+
+if (process.env.DISABLE_POLLING === 'true') {
+  console.log('⚠️ Бот запущен в режиме сервера (polling отключен для избежания конфликта 409)');
+}
 
 // Helper: Format Date
 function fmtDate(ts) {

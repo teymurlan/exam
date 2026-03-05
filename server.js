@@ -41,6 +41,10 @@ const CATEGORIES = {
 
 // --- API ENDPOINTS ---
 
+app.get('/', (req, res) => {
+  res.send('<h1>Cleaning Exam Server 2.0 is Running</h1><p>WebApp is available in Telegram Bot.</p>');
+});
+
 app.get('/health', (req, res) => {
   res.json({ ok: true, env: { bot: !!process.env.BOT_TOKEN, url: !!process.env.APP_URL } });
 });

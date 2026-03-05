@@ -1,635 +1,397 @@
-// server.js (CommonJS)
-// Express server + WebApp HTML (inline) + Exam API.
-// Uses bot.js exports for Telegram notifications, shared storage, fmtDate, questions.
-// Start command: node server.js
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
 
 const express = require('express');
 const crypto = require('crypto');
-
-const {
-  bot,
-  storage,
-  fmtDate,
-  sendToAdmins,
-  QUESTIONS,
-  TOPICS,
-  PASS_SCORE,
-  APP_URL,
-  ADMIN_IDS,
-  CORS_ORIGIN,
-  TZ,
-} = require('./bot.js');
+const path = require('path');
+const { bot, db, fmtDate, isAdmin, ADMIN_IDS } = require('./bot.js');
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+const PASS_SCORE = parseInt(process.env.PASS_SCORE || '13');
 
-// =========================
-// Middleware
-// =========================
-app.use(express.json({ limit: '256kb' }));
+app.use(express.json());
 
-// CORS
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', CORS_ORIGIN || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
+// Questions Data
+const QUESTIONS = [
+  { id: 1, cat: 1, q: 'Что делать при попадании химии в глаза?', options: ['Промыть водой 15 мин и вызвать врача', 'Протереть сухой салфеткой', 'Ничего не делать', 'Закапать любые капли'], correct: 0 },
+  { id: 2, cat: 1, q: 'Можно ли смешивать хлорсодержащие средства с аммиаком?', options: ['Да, это усилит эффект', 'Нет, выделяется ядовитый газ', 'Только в холодной воде', 'Да, если помещение проветривается'], correct: 1 },
+  { id: 3, cat: 1, q: 'Какой pH у кислотных средств?', options: ['Больше 7', 'Ровно 7', 'Меньше 7', '14'], correct: 2 },
+  { id: 4, cat: 1, q: 'Какое средство лучше всего удаляет известковый налет?', options: ['Щелочное', 'Кислотное', 'Нейтральное', 'Спиртовое'], correct: 1 },
+  { id: 5, cat: 2, q: 'В каком порядке убирается комната?', options: ['Снизу вверх', 'Сверху вниз, от окна к двери', 'От двери к окну', 'Как удобно'], correct: 1 },
+  { id: 6, cat: 3, q: 'Как очистить зеркало без разводов?', options: ['Газетой', 'Микрофибра для стекла + спиртовой очиститель', 'Влажной тряпкой', 'Мыльным раствором'], correct: 1 },
+  { id: 7, cat: 2, q: 'С чего начинается уборка пола?', options: ['С влажной уборки', 'С сухой уборки (пылесос/веник)', 'С полировки', 'С нанесения воска'], correct: 1 },
+  { id: 8, cat: 2, q: 'Что такое перекрестное загрязнение?', options: ['Перенос бактерий с грязной зоны в чистую', 'Смешивание двух видов химии', 'Уборка двух комнат одновременно', 'Использование одной тряпки для пыли'], correct: 0 },
+  { id: 9, cat: 3, q: 'Какого цвета микрофибра обычно используется для унитазов?', options: ['Синяя', 'Зеленая', 'Желтая', 'Красная'], correct: 3 },
+  { id: 10, cat: 3, q: 'Можно ли использовать меламиновую губку на глянцевых фасадах?', options: ['Да, она отлично чистит', 'Нет, она поцарапает поверхность', 'Только с водой', 'Только с химией'], correct: 1 },
+  { id: 11, cat: 3, q: 'Лучший инструмент для удаления шерсти с ковра?', options: ['Обычный веник', 'Турбощетка или резиновая щетка', 'Влажная тряпка', 'Пылесос без насадок'], correct: 1 },
+  { id: 12, cat: 3, q: 'Как удалить остатки скотча?', options: ['Водой', 'Маслом или специальным антискотчем', 'Металлической губкой', 'Ножом'], correct: 1 },
+  { id: 13, cat: 1, q: 'Нужны ли перчатки при работе с профессиональной химией?', options: ['Нет, если кожа не чувствительная', 'Да, всегда', 'Только при работе с кислотой', 'Только при работе с хлором'], correct: 1 },
+  { id: 14, cat: 2, q: 'Как правильно мыть пол шваброй?', options: ['Движениями вперед-назад', 'Движениями "восьмеркой"', 'Круговыми движениями', 'Только в одну сторону'], correct: 1 },
+  { id: 15, cat: 1, q: 'Что означает "нейтральный pH"?', options: ['pH около 0', 'pH около 7', 'pH около 14', 'pH не существует'], correct: 1 }
+];
 
-// =========================
-// Utils
-// =========================
-function nowTs() {
-  return Date.now();
-}
+const CATEGORIES = {
+  1: 'Безопасность и химия',
+  2: 'Технология уборки и порядок действий',
+  3: 'Инвентарь, поверхности и лайфхаки'
+};
 
-function shuffle(arr) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i -= 1) {
-    const j = crypto.randomInt(0, i + 1);
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
+// --- API ENDPOINTS ---
 
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-}
-
-function buildAdminStartMessage(user, chatId) {
-  const when = fmtDate(nowTs());
-  return (
-    '🟦 <b>Старт экзамена</b>\n\n' +
-    `👤 <b>${escapeHtml(user?.fullName || '—')}</b>\n` +
-    `📞 <code>${escapeHtml(user?.phone || '—')}</code>\n` +
-    `🆔 <code>${escapeHtml(String(chatId))}</code>\n` +
-    `🕒 ${escapeHtml(when)}\n`
-  );
-}
-
-function buildAdminFinishMessage(user, chatId, result) {
-  const when = fmtDate(result.ts);
-  const status = result.passed ? '✅ СДАЛ' : '❌ НЕ СДАЛ';
-  return (
-    '🟩 <b>Финал экзамена</b>\n\n' +
-    `👤 <b>${escapeHtml(user?.fullName || '—')}</b>\n` +
-    `📞 <code>${escapeHtml(user?.phone || '—')}</code>\n` +
-    `🆔 <code>${escapeHtml(String(chatId))}</code>\n` +
-    `🕒 ${escapeHtml(when)}\n` +
-    `📊 Счет: <b>${result.score}/${result.total}</b>\n` +
-    `🏁 Статус: <b>${status}</b>\n`
-  );
-}
-
-// Create friendly recommendations for failed topics
-function buildFailRecommendations(byTopic) {
-  // byTopic: { [topicId]: { correct, wrong, total } }
-  const stats = Object.entries(byTopic || {})
-    .map(([k, v]) => ({ topicId: Number(k), ...v }))
-    .filter(x => x.total > 0);
-
-  stats.sort((a, b) => (b.wrong / b.total) - (a.wrong / a.total));
-
-  const weak = stats.filter(s => s.wrong > 0).slice(0, 2);
-  const recs = [];
-
-  for (const w of weak) {
-    if (w.topicId === 1) {
-      recs.push('Повторите базовые правила безопасности: СИЗ, тест на незаметном участке, никогда не смешивать агрессивные средства.');
-    } else if (w.topicId === 2) {
-      recs.push('Освежите порядок действий: сверху вниз, от дальнего угла к выходу, соблюдение экспозиции и чистая последовательность зон.');
-    } else if (w.topicId === 3) {
-      recs.push('Потренируйте работу с инвентарём и поверхностями: микрофибра по зонам, аккуратно с абразивами, правильные насадки/техники.');
-    } else {
-      recs.push(`Подтяните тему: ${TOPICS[w.topicId] || '—'}.`);
-    }
-  }
-
-  // Ensure 2–3 points
-  if (recs.length < 2) recs.push('Пройдитесь по вопросам ещё раз и отметьте, где сомневались — это поможет быстро улучшить результат.');
-  if (recs.length < 3) recs.push('Если хотите — пересдача будет доступна после разрешения администратора.');
-
-  return recs.slice(0, 3);
-}
-
-function isValidChatId(chatId) {
-  return typeof chatId === 'string' && /^\d{5,}$/.test(chatId);
-}
-
-// =========================
-// Health
-// =========================
 app.get('/health', (req, res) => {
+  res.json({ ok: true, env: { bot: !!process.env.BOT_TOKEN, url: !!process.env.APP_URL } });
+});
+
+app.get('/api/status', (req, res) => {
+  const { chatId } = req.query;
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+
+  const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
+  if (!user) return res.json({ registered: false });
+
+  const lastResult = db.prepare('SELECT * FROM results WHERE chatId = ? ORDER BY finishedAt DESC LIMIT 1').get(chatId);
+  
   res.json({
-    ok: true,
-    ts: nowTs(),
-    time: fmtDate(nowTs()),
-    env: {
-      BOT_TOKEN: Boolean(process.env.BOT_TOKEN),
-      APP_URL: APP_URL,
-      ADMIN_IDS: ADMIN_IDS,
-      PASS_SCORE: PASS_SCORE,
-      CORS_ORIGIN: CORS_ORIGIN,
-      TZ: TZ,
-    },
-    storage: storage.meta,
+    registered: true,
+    fio: user.fio,
+    canTakeExam: user.canRetry || !lastResult,
+    hasResult: !!lastResult,
+    lastResult: lastResult ? { score: lastResult.score, total: lastResult.total, status: lastResult.status, date: fmtDate(lastResult.finishedAt) } : null
   });
 });
 
-// =========================
-// WebApp HTML
-// =========================
-function examHtml() {
-  // чистый HTML/CSS/JS, без фреймворков
-  // fetch timeout implemented
-  return `<!doctype html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Экзамен</title>
-  <style>
-    :root { color-scheme: light; }
-    body { font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial; margin: 0; background: #0b1220; color: #e8eefc; }
-    .wrap { max-width: 760px; margin: 0 auto; padding: 18px; }
-    .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 14px; padding: 16px; }
-    h1 { font-size: 20px; margin: 0 0 12px; }
-    h2 { font-size: 16px; margin: 0 0 10px; opacity: .95; }
-    p, li { line-height: 1.45; }
-    .muted { opacity: .8; }
-    .btn { display:inline-flex; align-items:center; justify-content:center; gap: 8px; border:0; border-radius: 12px; padding: 12px 14px; cursor:pointer; font-weight: 700; }
-    .btn-primary { background: #3b82f6; color: #061022; }
-    .btn-ghost { background: rgba(255,255,255,0.08); color: #e8eefc; border: 1px solid rgba(255,255,255,0.14); }
-    .row { display:flex; gap: 10px; flex-wrap: wrap; }
-    .spacer { height: 12px; }
-    .danger { color: #ffb4b4; }
-    .ok { color: #b8ffcf; }
-    .qbox { margin-top: 10px; }
-    .opt { display:flex; gap: 10px; padding: 10px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.05); margin: 8px 0; }
-    .opt input { margin-top: 3px; }
-    .topline { display:flex; justify-content: space-between; gap: 10px; align-items: center; flex-wrap: wrap; }
-    .pill { padding: 6px 10px; border-radius: 999px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14); font-weight: 700; }
-    .timer { font-variant-numeric: tabular-nums; }
-    .footer { margin-top: 16px; opacity: .8; font-size: 12px; }
-    .hidden { display:none !important; }
-    .hr { height: 1px; background: rgba(255,255,255,0.12); margin: 14px 0; }
-    .mono { font-family: ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <div class="card">
-      <div id="screenRules">
-        <h1>Экзамен сотрудников</h1>
-        <p class="muted">Перед началом обязательно ознакомьтесь с правилами.</p>
-        <div class="hr"></div>
-        <h2>Правила</h2>
-        <ol>
-          <li>Всего 15 вопросов.</li>
-          <li>На каждый вопрос даётся <b>15 секунд</b>.</li>
-          <li>Если время истекло — ответ считается неверным и вы переходите дальше.</li>
-          <li>Не обновляйте страницу во время экзамена.</li>
-          <li>Результат фиксируется после отправки.</li>
-        </ol>
-        <div class="spacer"></div>
-        <div class="row">
-          <button class="btn btn-primary" id="btnAgree">✅ Я согласен начать</button>
-        </div>
-        <div class="spacer"></div>
-        <div class="muted">Если кнопка не работает — вернитесь в бота и откройте экзамен заново.</div>
-      </div>
+app.get('/api/questions', (req, res) => {
+  const { chatId } = req.query;
+  if (!chatId) return res.status(400).json({ error: 'chatId required' });
 
-      <div id="screenExam" class="hidden">
-        <div class="topline">
-          <div class="pill" id="progressPill">Вопрос 1/15</div>
-          <div class="pill timer" id="timerPill">⏳ 15</div>
-        </div>
-        <div class="spacer"></div>
-        <div id="qText" style="font-size: 16px; font-weight: 800;"></div>
-        <div class="qbox" id="optionsBox"></div>
-        <div class="spacer"></div>
-        <div class="row">
-          <button class="btn btn-ghost" id="btnNext">Дальше</button>
-          <button class="btn btn-primary hidden" id="btnSubmit">Отправить</button>
-        </div>
-        <div class="footer">Подсказка: если не успели — просто дождитесь окончания таймера.</div>
-      </div>
+  const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
+  if (!user) return res.status(403).json({ error: 'Not registered' });
 
-      <div id="screenResult" class="hidden">
-        <h1>Результат</h1>
-        <div id="resultBox"></div>
-        <div class="spacer"></div>
-        <div class="muted">Можно закрыть страницу и вернуться в Telegram.</div>
-      </div>
-    </div>
-  </div>
+  const lastResult = db.prepare('SELECT * FROM results WHERE chatId = ? ORDER BY finishedAt DESC LIMIT 1').get(chatId);
+  if (lastResult && !user.canRetry) return res.status(403).json({ error: 'Exam already taken' });
 
-<script>
-(function () {
-  const qs = new URLSearchParams(location.search);
-  const chatId = qs.get('chatId') || '';
-  const $ = (id) => document.getElementById(id);
+  // Create session
+  const token = crypto.randomBytes(16).toString('hex');
+  const shuffled = [...QUESTIONS].sort(() => Math.random() - 0.5);
+  
+  const orderMap = shuffled.map(q => ({
+    id: q.id,
+    options: q.options.map((opt, idx) => ({ text: opt, originalIdx: idx })).sort(() => Math.random() - 0.5)
+  }));
 
-  const screenRules = $('screenRules');
-  const screenExam = $('screenExam');
-  const screenResult = $('screenResult');
+  db.prepare('INSERT INTO sessions (token, chatId, createdAt, orderMap) VALUES (?, ?, ?, ?)').run(token, chatId, Date.now(), JSON.stringify(orderMap));
 
-  const btnAgree = $('btnAgree');
-  const btnNext = $('btnNext');
-  const btnSubmit = $('btnSubmit');
-
-  const progressPill = $('progressPill');
-  const timerPill = $('timerPill');
-  const qText = $('qText');
-  const optionsBox = $('optionsBox');
-  const resultBox = $('resultBox');
-
-  let token = null;
-  let questions = [];
-  let idx = 0;
-  let answers = []; // {qid, optionIndex|null}
-  let timer = null;
-  let secondsLeft = 15;
-
-  function show(el) { el.classList.remove('hidden'); }
-  function hide(el) { el.classList.add('hidden'); }
-
-  function fetchWithTimeout(url, opts, ms) {
-    const controller = new AbortController();
-    const t = setTimeout(() => controller.abort(), ms);
-    return fetch(url, Object.assign({}, opts || {}, { signal: controller.signal }))
-      .finally(() => clearTimeout(t));
-  }
-
-  function renderQuestion() {
-    const q = questions[idx];
-    progressPill.textContent = 'Вопрос ' + (idx + 1) + '/' + questions.length;
-    qText.textContent = q.text;
-
-    optionsBox.innerHTML = '';
-    const name = 'opt';
-
-    q.options.forEach((opt, i) => {
-      const row = document.createElement('label');
-      row.className = 'opt';
-      row.innerHTML = '<input type="radio" name="' + name + '" value="' + i + '" />' +
-                      '<div>' + escapeHtml(opt) + '</div>';
-      optionsBox.appendChild(row);
-    });
-
-    // buttons
-    btnSubmit.classList.add('hidden');
-    btnNext.classList.remove('hidden');
-    if (idx === questions.length - 1) {
-      btnNext.classList.add('hidden');
-      btnSubmit.classList.remove('hidden');
-    }
-
-    // reset timer
-    stopTimer();
-    secondsLeft = 15;
-    timerPill.textContent = '⏳ ' + secondsLeft;
-    timer = setInterval(() => {
-      secondsLeft -= 1;
-      if (secondsLeft <= 0) {
-        timerPill.textContent = '⏳ 0';
-        stopTimer();
-        // auto mark null answer and move next (or submit)
-        saveAnswer(null);
-        if (idx < questions.length - 1) {
-          idx += 1;
-          renderQuestion();
-        } else {
-          submit();
-        }
-        return;
-      }
-      timerPill.textContent = '⏳ ' + secondsLeft;
-    }, 1000);
-  }
-
-  function stopTimer() {
-    if (timer) clearInterval(timer);
-    timer = null;
-  }
-
-  function getSelectedOptionIndex() {
-    const checked = optionsBox.querySelector('input[type="radio"]:checked');
-    if (!checked) return null;
-    const v = Number(checked.value);
-    if (!Number.isFinite(v)) return null;
-    return v;
-  }
-
-  function saveAnswer(optionIndex) {
-    const q = questions[idx];
-    answers[idx] = { qid: q.id, optionIndex: optionIndex };
-  }
-
-  function escapeHtml(s) {
-    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  }
-
-  async function loadQuestions() {
-    if (!chatId) throw new Error('Нет chatId');
-    const resp = await fetchWithTimeout('/api/questions?chatId=' + encodeURIComponent(chatId), { method: 'GET' }, 12000);
-    if (!resp.ok) {
-      const t = await resp.text().catch(() => '');
-      throw new Error('Ошибка загрузки вопросов: ' + resp.status + ' ' + t);
-    }
-    const data = await resp.json();
-    token = data.token;
-    questions = data.questions || [];
-    if (!token || !questions.length) throw new Error('Пустой набор вопросов');
-  }
-
-  async function submit() {
-    stopTimer();
-    // ensure current question stored (if user clicked submit)
-    if (!answers[idx]) saveAnswer(getSelectedOptionIndex());
-
-    // normalize: fill missing as null
-    for (let i = 0; i < questions.length; i++) {
-      if (!answers[i]) answers[i] = { qid: questions[i].id, optionIndex: null };
-      if (answers[i].optionIndex === undefined) answers[i].optionIndex = null;
-    }
-
-    btnNext.disabled = true;
-    btnSubmit.disabled = true;
-
-    try {
-      const resp = await fetchWithTimeout('/api/submit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chatId: chatId, token: token, answers: answers })
-      }, 12000);
-
-      const data = await resp.json().catch(() => ({}));
-      hide(screenExam);
-      show(screenResult);
-
-      if (!resp.ok || !data.ok) {
-        const msg = data && data.error ? data.error : 'Не удалось отправить ответы';
-        resultBox.innerHTML = '<div class="danger"><b>Ошибка:</b> ' + escapeHtml(msg) + '</div>';
-        return;
-      }
-
-      const status = data.passed ? '<span class="ok"><b>СДАЛ</b></span>' : '<span class="danger"><b>НЕ СДАЛ</b></span>';
-      resultBox.innerHTML =
-        '<div>Статус: ' + status + '</div>' +
-        '<div>Счет: <b>' + data.score + '/' + data.total + '</b></div>' +
-        '<div class="muted">Дата: <span class="mono">' + escapeHtml(data.time || '') + '</span></div>';
-    } catch (e) {
-      hide(screenExam);
-      show(screenResult);
-      resultBox.innerHTML = '<div class="danger"><b>Ошибка:</b> ' + escapeHtml(e.message || String(e)) + '</div>';
-    }
-  }
-
-  btnAgree.addEventListener('click', async () => {
-    btnAgree.disabled = true;
-    try {
-      // Quick status check (optional)
-      const st = await fetchWithTimeout('/api/status?chatId=' + encodeURIComponent(chatId), { method: 'GET' }, 8000);
-      if (!st.ok) throw new Error('Не удалось проверить статус');
-
-      await loadQuestions();
-      answers = [];
-      idx = 0;
-
-      hide(screenRules);
-      show(screenExam);
-      renderQuestion();
-    } catch (e) {
-      btnAgree.disabled = false;
-      alert('Ошибка: ' + (e.message || e));
-    }
+  // Notify Admins
+  ADMIN_IDS.forEach(adminId => {
+    bot.sendMessage(adminId, `🚀 **Экзамен начат!**\n\n👤 ${user.fio}\n📞 <code>${user.phone}</code>\n🆔 <code>${user.chatId}</code>\n🕒 ${fmtDate(Date.now())}`, { parse_mode: 'HTML' });
   });
 
-  btnNext.addEventListener('click', () => {
-    // save current selected
-    saveAnswer(getSelectedOptionIndex());
-    stopTimer();
-    if (idx < questions.length - 1) {
-      idx += 1;
-      renderQuestion();
-    }
+  res.json({
+    token,
+    questions: orderMap.map((q, idx) => ({
+      id: q.id,
+      q: QUESTIONS.find(orig => orig.id === q.id).q,
+      options: q.options.map(o => o.text),
+      index: idx + 1,
+      total: QUESTIONS.length
+    }))
   });
-
-  btnSubmit.addEventListener('click', () => {
-    saveAnswer(getSelectedOptionIndex());
-    submit();
-  });
-})();
-</script>
-</body>
-</html>`;
-}
-
-// =========================
-// Routes
-// =========================
-app.get('/exam', async (req, res) => {
-  // Just returns HTML. Rules screen is inside HTML.
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(examHtml());
-});
-
-app.get('/api/status', async (req, res) => {
-  try {
-    const chatId = String(req.query.chatId || '');
-    if (!isValidChatId(chatId)) return res.status(400).json({ ok: false, error: 'Invalid chatId' });
-
-    const user = await storage.getUser(chatId);
-    const flags = await storage.getFlags(chatId);
-    const last = await storage.getLastResult(chatId);
-
-    res.json({
-      ok: true,
-      registered: !!user,
-      canTakeExam: !!flags.canTakeExam,
-      hasResult: !!last,
-      lastResult: last
-        ? {
-            ts: last.ts,
-            time: fmtDate(last.ts),
-            score: last.score,
-            total: last.total,
-            passed: last.passed,
-            attemptId: last.attemptId,
-          }
-        : null,
-    });
-  } catch (e) {
-    console.error(`[${fmtDate(nowTs())}] /api/status error`, e);
-    res.status(500).json({ ok: false, error: 'Server error' });
-  }
-});
-
-app.get('/api/questions', async (req, res) => {
-  try {
-    const chatId = String(req.query.chatId || '');
-    if (!isValidChatId(chatId)) return res.status(400).json({ ok: false, error: 'Invalid chatId' });
-
-    const user = await storage.getUser(chatId);
-    if (!user) return res.status(403).json({ ok: false, error: 'Not registered' });
-
-    const flags = await storage.getFlags(chatId);
-    if (!flags.canTakeExam) {
-      return res.status(403).json({ ok: false, error: 'Exam is not allowed. Open exam from bot and accept rules.' });
-    }
-
-    // Prepare questions:
-    // - shuffle questions
-    // - shuffle options
-    // - do NOT expose correctOptionIndex
-    const qOrder = shuffle(QUESTIONS).slice(0, 15);
-    const prepared = [];
-    const sessionQuestions = [];
-
-    for (const q of qOrder) {
-      const optWithIndex = q.options.map((txt, i) => ({ txt, originalIndex: i }));
-      const shuffledOpts = shuffle(optWithIndex);
-      const options = shuffledOpts.map(x => x.txt);
-      const correctIndexShuffled = shuffledOpts.findIndex(x => x.originalIndex === q.correctIndex);
-
-      prepared.push({ id: q.id, text: q.text, options });
-      sessionQuestions.push({ qid: q.id, correctIndexShuffled, topic: q.topic });
-    }
-
-    const token = storage.createSession(chatId, { questions: sessionQuestions });
-
-    // Notify admins about start
-    try {
-      await sendToAdmins(buildAdminStartMessage(user, chatId));
-    } catch (_) {}
-
-    res.json({ ok: true, token, questions: prepared });
-  } catch (e) {
-    console.error(`[${fmtDate(nowTs())}] /api/questions error`, e);
-    res.status(500).json({ ok: false, error: 'Server error' });
-  }
 });
 
 app.post('/api/submit', async (req, res) => {
-  try {
-    const { chatId, token, answers } = req.body || {};
-    const chatIdStr = String(chatId || '');
-    const tokenStr = String(token || '');
+  const { token, chatId, answers } = req.body;
+  if (!token || !chatId || !answers) return res.status(400).json({ error: 'Missing data' });
 
-    if (!isValidChatId(chatIdStr)) return res.status(400).json({ ok: false, error: 'Invalid chatId' });
-    if (!tokenStr || tokenStr.length < 20) return res.status(400).json({ ok: false, error: 'Invalid token' });
-    if (!Array.isArray(answers)) return res.status(400).json({ ok: false, error: 'Invalid answers' });
+  const session = db.prepare('SELECT * FROM sessions WHERE token = ? AND chatId = ?').get(token, chatId);
+  if (!session || session.submitted) return res.status(403).json({ error: 'Invalid or used session' });
 
-    const session = storage.getSession(tokenStr);
-    if (!session) return res.status(403).json({ ok: false, error: 'Session expired or invalid' });
-    if (session.submitted) return res.status(409).json({ ok: false, error: 'Already submitted' });
-    if (String(session.chatId) !== chatIdStr) return res.status(403).json({ ok: false, error: 'Token mismatch' });
+  const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
+  const orderMap = JSON.parse(session.orderMap);
+  
+  let score = 0;
+  const errorsByCat = { 1: 0, 2: 0, 3: 0 };
+  const details = [];
 
-    // Build answer map
-    const ansMap = new Map();
-    for (const a of answers) {
-      if (!a || typeof a.qid !== 'string') continue;
-      const opt = (a.optionIndex === null || a.optionIndex === undefined) ? null : Number(a.optionIndex);
-      ansMap.set(a.qid, Number.isFinite(opt) ? opt : null);
-    }
-
-    let score = 0;
-    const total = session.questions.length;
-
-    const byTopic = {};
-    for (const sq of session.questions) {
-      const chosen = ansMap.has(sq.qid) ? ansMap.get(sq.qid) : null;
-      const isCorrect = (chosen !== null && chosen === sq.correctIndexShuffled);
-
-      if (!byTopic[sq.topic]) byTopic[sq.topic] = { correct: 0, wrong: 0, total: 0 };
-      byTopic[sq.topic].total += 1;
-
-      if (isCorrect) {
-        score += 1;
-        byTopic[sq.topic].correct += 1;
-      } else {
-        byTopic[sq.topic].wrong += 1;
+  orderMap.forEach((qMap, idx) => {
+    const origQ = QUESTIONS.find(q => q.id === qMap.id);
+    const userAnswer = answers.find(a => a.id === qMap.id);
+    
+    let isCorrect = false;
+    if (userAnswer && userAnswer.optionIndex !== null) {
+      const selectedOption = qMap.options[userAnswer.optionIndex];
+      if (selectedOption && selectedOption.originalIdx === origQ.correct) {
+        isCorrect = true;
       }
     }
 
-    const passed = score >= PASS_SCORE;
-    const attemptId = crypto.randomBytes(8).toString('hex');
-    const ts = nowTs();
-
-    // determine weak topics list
-    const weakTopics = Object.entries(byTopic)
-      .map(([k, v]) => ({ topicId: Number(k), ...v }))
-      .filter(x => x.total > 0)
-      .sort((a, b) => (b.wrong / b.total) - (a.wrong / a.total))
-      .filter(x => x.wrong > 0)
-      .map(x => ({ topicId: x.topicId, name: TOPICS[x.topicId] || String(x.topicId) }))
-      .slice(0, 3);
-
-    const result = {
-      chatId: chatIdStr,
-      ts,
-      score,
-      total,
-      passed,
-      byTopic,
-      weakTopics,
-      attemptId,
-    };
-
-    // Persist last result
-    await storage.setLastResult(chatIdStr, result);
-
-    // After submit: lock exam; retry only by admin
-    await storage.setCanTakeExam(chatIdStr, false);
-    await storage.setCanRetry(chatIdStr, false);
-
-    // Mark session submitted
-    storage.markSessionSubmitted(tokenStr);
-
-    // Candidate notifications
-    const user = await storage.getUser(chatIdStr);
-
-    if (passed) {
-      const msg =
-        '🍬🍬🍬\n' +
-        'Поздравляем! Вы успешно сдали экзамен. Скоро с вами свяжется наш менеджер.';
-      try {
-        await bot.sendMessage(chatIdStr, msg, { parse_mode: 'HTML' });
-      } catch (_) {}
+    if (isCorrect) {
+      score++;
     } else {
-      const recs = buildFailRecommendations(byTopic);
-      const recText =
-        '❌ <b>Экзамен не сдан</b>\n\n' +
-        'Ничего страшного — это нормальная ситуация. Вот что лучше подтянуть:\n' +
-        recs.map((r, i) => `${i + 1}) ${escapeHtml(r)}`).join('\n') +
-        '\n\n' +
-        'Пересдача будет доступна после разрешения администратора.';
-      try {
-        await bot.sendMessage(chatIdStr, recText, { parse_mode: 'HTML' });
-      } catch (_) {}
+      errorsByCat[origQ.cat]++;
     }
+    details.push({ id: qMap.id, correct: isCorrect });
+  });
 
-    // Admin finish notify
-    try {
-      await sendToAdmins(buildAdminFinishMessage(user, chatIdStr, result));
-    } catch (_) {}
+  const status = score >= PASS_SCORE ? 'PASS' : 'FAIL';
+  const finishedAt = Date.now();
 
-    // response to WebApp
-    res.json({ ok: true, passed, score, total, time: fmtDate(ts) });
-  } catch (e) {
-    console.error(`[${fmtDate(nowTs())}] /api/submit error`, e);
-    res.status(500).json({ ok: false, error: 'Server error' });
+  db.prepare('INSERT INTO results (chatId, score, total, status, finishedAt, details) VALUES (?, ?, ?, ?, ?, ?)').run(chatId, score, QUESTIONS.length, status, finishedAt, JSON.stringify(details));
+  db.prepare('UPDATE sessions SET submitted = 1 WHERE token = ?').run(token);
+  db.prepare('UPDATE users SET canRetry = 0 WHERE chatId = ?').run(chatId);
+
+  // Recommendations
+  let recommendations = [];
+  if (status === 'FAIL') {
+    const sortedCats = Object.entries(errorsByCat).sort((a, b) => b[1] - a[1]);
+    sortedCats.forEach(([catId, count]) => {
+      if (count > 0) recommendations.push(CATEGORIES[catId]);
+    });
   }
+
+  // Notify Candidate
+  if (status === 'PASS') {
+    bot.sendMessage(chatId, '🍬🍬🍬\n\n**Поздравляем!** Вы успешно сдали экзамен. Скоро с вами свяжется наш менеджер.', { parse_mode: 'Markdown' });
+  } else {
+    let recText = '😔 К сожалению, вы не набрали проходной балл.\n\n**Рекомендации:**\nВам стоит подтянуть следующие темы:\n';
+    recommendations.slice(0, 2).forEach(r => recText += `• ${r}\n`);
+    recText += '\nНе расстраивайтесь! Повторите материал и попросите администратора разрешить пересдачу.';
+    bot.sendMessage(chatId, recText, { parse_mode: 'Markdown' });
+  }
+
+  // Notify Admins
+  ADMIN_IDS.forEach(adminId => {
+    bot.sendMessage(adminId, `🏁 **Экзамен завершен!**\n\n👤 ${user.fio}\n📞 <code>${user.phone}</code>\n🆔 <code>${user.chatId}</code>\n📊 Результат: **${score}/${QUESTIONS.length}**\nСтатус: ${status === 'PASS' ? '✅ СДАЛ' : '❌ НЕ СДАЛ'}\n🕒 ${fmtDate(finishedAt)}`, { parse_mode: 'HTML' });
+  });
+
+  res.json({ score, total: QUESTIONS.length, status, recommendations });
 });
 
-// =========================
-// Start server
-// =========================
-const PORT = Number(process.env.PORT || 3000);
-app.listen(PORT, () => {
-  console.log(`[${fmtDate(nowTs())}] server listening on ${PORT} | APP_URL=${APP_URL}`);
+// --- WEBAPP HTML ---
+
+app.get('/exam', (req, res) => {
+  const { chatId } = req.query;
+  res.send(`
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Экзамен Клининг 2.0</title>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <style>
+        :root {
+            --tg-theme-bg-color: #fff;
+            --tg-theme-text-color: #000;
+            --tg-theme-button-color: #3390ec;
+            --tg-theme-button-text-color: #fff;
+            --tg-theme-secondary-bg-color: #f4f4f5;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--tg-theme-bg-color);
+            color: var(--tg-theme-text-color);
+            margin: 0; padding: 20px;
+            display: flex; flex-direction: column; min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .screen { display: none; flex-direction: column; gap: 20px; }
+        .screen.active { display: flex; }
+        h1 { font-size: 22px; margin: 0; }
+        .card { background: var(--tg-theme-secondary-bg-color); padding: 20px; border-radius: 12px; }
+        .rules-list { padding-left: 20px; line-height: 1.6; }
+        .btn {
+            background-color: var(--tg-theme-button-color);
+            color: var(--tg-theme-button-text-color);
+            border: none; border-radius: 10px; padding: 15px;
+            font-size: 16px; font-weight: 600; cursor: pointer;
+            text-align: center;
+        }
+        .btn:disabled { opacity: 0.5; }
+        .timer-container { display: flex; align-items: center; justify-content: space-between; font-weight: bold; }
+        .timer-bar { height: 6px; background: #eee; border-radius: 3px; overflow: hidden; margin-top: 5px; }
+        .timer-fill { height: 100%; background: var(--tg-theme-button-color); transition: width 1s linear; }
+        .options { display: flex; flex-direction: column; gap: 10px; margin-top: 15px; }
+        .option {
+            background: var(--tg-theme-bg-color); border: 1px solid #ddd;
+            padding: 15px; border-radius: 10px; cursor: pointer;
+            display: flex; align-items: center; gap: 10px;
+        }
+        .option.selected { border-color: var(--tg-theme-button-color); background: #eef6ff; }
+        .progress { font-size: 14px; opacity: 0.6; }
+        .result-icon { font-size: 64px; text-align: center; }
+    </style>
+</head>
+<body>
+    <div id="screen-rules" class="screen active">
+        <h1>📜 Правила экзамена</h1>
+        <div class="card">
+            <ul class="rules-list">
+                <li>Всего <b>15 вопросов</b>.</li>
+                <li>На каждый вопрос — <b>15 секунд</b>.</li>
+                <li>Не успели — ответ не засчитан.</li>
+                <li>Проходной балл — <b>${PASS_SCORE}</b>.</li>
+            </ul>
+        </div>
+        <button class="btn" onclick="startExam()">✅ Я согласен начать</button>
+    </div>
+
+    <div id="screen-exam" class="screen">
+        <div class="timer-container">
+            <span id="timer-text">Осталось: 15с</span>
+            <span class="progress" id="progress-text">Вопрос 1/15</span>
+        </div>
+        <div class="timer-bar"><div id="timer-fill" class="timer-fill" style="width: 100%"></div></div>
+        <div class="card">
+            <h2 id="question-text" style="margin: 0; font-size: 18px;">Загрузка...</h2>
+            <div class="options" id="options-container"></div>
+        </div>
+        <button class="btn" id="next-btn" onclick="nextQuestion()" disabled>Далее</button>
+    </div>
+
+    <div id="screen-result" class="screen">
+        <div class="result-icon" id="result-icon"></div>
+        <h1 id="result-title" style="text-align: center;"></h1>
+        <div class="card" id="result-details" style="text-align: center;"></div>
+        <button class="btn" onclick="tg.close()">Закрыть</button>
+    </div>
+
+    <script>
+        const tg = window.Telegram.WebApp;
+        tg.expand();
+        const chatId = "${chatId}";
+        let token = "";
+        let questions = [];
+        let currentIdx = 0;
+        let answers = [];
+        let timer = 15;
+        let timerInterval;
+        let selectedOption = null;
+
+        async function startExam() {
+            document.getElementById('screen-rules').classList.remove('active');
+            document.getElementById('screen-exam').classList.add('active');
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+                const res = await fetch(\`/api/questions?chatId=\${chatId}\`, { signal: controller.signal });
+                clearTimeout(timeoutId);
+                const data = await res.json();
+                if (data.error) throw new Error(data.error);
+                token = data.token;
+                questions = data.questions;
+                showQuestion();
+            } catch (e) {
+                alert("Ошибка загрузки: " + (e.name === 'AbortError' ? 'Таймаут' : e.message));
+                tg.close();
+            }
+        }
+
+        function showQuestion() {
+            const q = questions[currentIdx];
+            document.getElementById('question-text').innerText = q.q;
+            document.getElementById('progress-text').innerText = \`Вопрос \${currentIdx + 1}/\${questions.length}\`;
+            
+            const container = document.getElementById('options-container');
+            container.innerHTML = "";
+            selectedOption = null;
+            document.getElementById('next-btn').disabled = true;
+            document.getElementById('next-btn').innerText = currentIdx === questions.length - 1 ? "Завершить" : "Далее";
+
+            q.options.forEach((opt, idx) => {
+                const div = document.createElement('div');
+                div.className = "option";
+                div.innerText = opt;
+                div.onclick = () => selectOption(idx, div);
+                container.appendChild(div);
+            });
+
+            startTimer();
+        }
+
+        function selectOption(idx, el) {
+            selectedOption = idx;
+            document.querySelectorAll('.option').forEach(o => o.classList.remove('selected'));
+            el.classList.add('selected');
+            document.getElementById('next-btn').disabled = false;
+        }
+
+        function startTimer() {
+            clearInterval(timerInterval);
+            timer = 15;
+            updateTimerUI();
+            timerInterval = setInterval(() => {
+                timer--;
+                updateTimerUI();
+                if (timer <= 0) {
+                    clearInterval(timerInterval);
+                    autoNext();
+                }
+            }, 1000);
+        }
+
+        function updateTimerUI() {
+            document.getElementById('timer-text').innerText = \`Осталось: \${timer}с\`;
+            document.getElementById('timer-fill').style.width = \`\${(timer / 15) * 100}%\`;
+        }
+
+        function autoNext() {
+            answers.push({ id: questions[currentIdx].id, optionIndex: selectedOption });
+            currentIdx++;
+            if (currentIdx < questions.length) {
+                showQuestion();
+            } else {
+                submitExam();
+            }
+        }
+
+        function nextQuestion() {
+            clearInterval(timerInterval);
+            autoNext();
+        }
+
+        async function submitExam() {
+            document.getElementById('screen-exam').classList.remove('active');
+            tg.MainButton.showProgress();
+            
+            try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 15000);
+                const res = await fetch('/api/submit', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token, chatId, answers }),
+                    signal: controller.signal
+                });
+                clearTimeout(timeoutId);
+                const data = await res.json();
+                showResult(data);
+            } catch (e) {
+                alert("Ошибка при отправке: " + (e.name === 'AbortError' ? 'Таймаут' : e.message));
+            } finally {
+                tg.MainButton.hideProgress();
+            }
+        }
+
+        function showResult(data) {
+            document.getElementById('screen-result').classList.add('active');
+            const isPass = data.status === 'PASS';
+            document.getElementById('result-icon').innerText = isPass ? "✅" : "❌";
+            document.getElementById('result-title').innerText = isPass ? "Экзамен сдан!" : "Экзамен не сдан";
+            document.getElementById('result-details').innerHTML = \`
+                <p style="font-size: 24px; font-weight: bold;">\${data.score} / \${data.total}</p>
+                <p>\${isPass ? "Поздравляем! Вы отлично справились." : "К сожалению, этого недостаточно."}</p>
+            \`;
+        }
+    </script>
+</body>
+</html>
+  `);
+});
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
 });

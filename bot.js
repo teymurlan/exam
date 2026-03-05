@@ -53,10 +53,16 @@ db.exec(`
   );
 `);
 
-const bot = new TelegramBot(TOKEN, { polling: process.env.DISABLE_POLLING !== 'true' });
+// Disable polling in AI Studio environment to avoid 409 Conflict with Railway
+const isAIStudio = process.env.APP_URL && (process.env.APP_URL.includes('ais-dev') || process.env.APP_URL.includes('ais-pre'));
+const shouldPoll = isAIStudio ? false : (process.env.DISABLE_POLLING !== 'true');
 
-if (process.env.DISABLE_POLLING === 'true') {
-  console.log('⚠️ Бот запущен в режиме сервера (polling отключен для избежания конфликта 409)');
+const bot = new TelegramBot(TOKEN, { polling: shouldPoll });
+
+if (isAIStudio) {
+  console.log('ℹ️ AI Studio detected: Polling DISABLED to prevent conflict with your Railway bot.');
+} else if (!shouldPoll) {
+  console.log('⚠️ Polling DISABLED via environment variable.');
 }
 
 // Helper: Format Date
@@ -320,6 +326,9 @@ bot.on('callback_query', async (query) => {
         await bot.sendMessage(chatId, '🧹 **БАЗА ДАННЫХ ОЧИЩЕНА**\nВсе пользователи и результаты удалены.');
         showAdminPanel(chatId);
       }
+    } else if (data === 'show_main_menu') {
+      await bot.answerCallbackQuery(query.id);
+      showMainMenu(chatId);
     }
   } catch (err) {
     console.error(`[CRITICAL ERROR] Callback: ${err.message}`);
@@ -352,20 +361,12 @@ function showAdminPanel(chatId) {
         [{ text: '📊 Последние 10 результатов', callback_data: 'admin_last_10' }],
         [{ text: '🔍 Найти кандидата', callback_data: 'admin_find_req' }],
         [{ text: '🔄 Разрешить пересдачу', callback_data: 'admin_retry_req' }],
-        [{ text: '🧹 Очистить всю базу', callback_та: 'admin_reset_req' }],
+        [{ text: '🧹 Очистить всю базу', callback_data: 'admin_reset_req' }],
         [{ text: '🏠 Вернуться в меню', callback_data: 'show_main_menu' }]
       ]
     }
   });
 }
-
-// Add handler for returning to main menu
-bot.on('callback_query', async (query) => {
-  if (query.data === 'show_main_menu') {
-    await bot.answerCallbackQuery(query.id);
-    showMainMenu(String(query.from.id));
-  }
-});
 
 // Export for server.js
 module.exports = { bot, db, fmtDate, isAdmin, ADMIN_IDS };

@@ -15,7 +15,9 @@ dayjs.extend(timezone);
 
 const TOKEN = process.env.BOT_TOKEN;
 const ADMIN_IDS = (process.env.ADMIN_IDS || '').split(',').map(id => id.trim());
-const APP_URL = process.env.APP_URL;
+let APP_URL = (process.env.APP_URL || '').trim();
+if (APP_URL.endsWith('/')) APP_URL = APP_URL.slice(0, -1);
+
 const TZ = process.env.TZ || 'Europe/Moscow';
 
 if (!TOKEN) {
@@ -175,10 +177,13 @@ bot.on('callback_query', async (query) => {
       `4. Проходной балл: **${process.env.PASS_SCORE || 13} из 15**.\n\n` +
       `Готовы начать?`;
 
+    const webAppUrl = `${APP_URL}/exam?chatId=${chatId}`;
+    console.log(`[DEBUG] Opening WebApp for ${chatId}: ${webAppUrl}`);
+
     bot.sendMessage(chatId, rules, {
       parse_mode: 'Markdown',
       reply_markup: {
-        inline_keyboard: [[{ text: '✅ Я согласен, начать!', web_app: { url: `${APP_URL}/exam?chatId=${chatId}` } }]]
+        inline_keyboard: [[{ text: '✅ Я согласен, начать!', web_app: { url: webAppUrl } }]]
       }
     });
   } else if (data === 'my_result') {

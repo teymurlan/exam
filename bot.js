@@ -247,23 +247,52 @@ bot.on('callback_query', async (query) => {
       });
     } 
     
-    // 2. User Info
-    else if (data === 'my_result') {
+    // 2. User Info & Leaderboard
+    else if (data === 'my_profile') {
       await bot.answerCallbackQuery(query.id);
-      const result = db.prepare('SELECT * FROM results WHERE chatId = ? ORDER BY finishedAt DESC LIMIT 1').get(chatId);
-      if (result) {
-        const text = `📊 **ВАШ РЕЗУЛЬТАТ**\n` +
-          `━━━━━━━━━━━━━━━━━━\n` +
-          `👤 Кандидат: ${query.from.first_name}\n` +
-          `🎯 Баллы: **${result.score} / ${result.total}**\n` +
-          `📢 Статус: ${result.status === 'PASS' ? '✅ СДАНО' : '❌ НЕ СДАНО'}\n` +
-          `📅 Дата: ${fmtDate(result.finishedAt)}\n` +
-          `━━━━━━━━━━━━━━━━━━`;
-        await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+      const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
+      const bestResult = db.prepare('SELECT MAX(score) as maxScore FROM results WHERE chatId = ?').get(chatId);
+      const totalAttempts = db.prepare('SELECT COUNT(*) as count FROM results WHERE chatId = ?').get(chatId);
+      
+      const profileText = `👤 **ВАШ ПРОФИЛЬ**\n` +
+        `━━━━━━━━━━━━━━━━━━\n` +
+        `📝 ФИО: **${user.fio}**\n` +
+        `📞 Тел: \`${user.phone}\`\n` +
+        `🏆 Лучший результат: **${bestResult.maxScore || 0} / 15**\n` +
+        `🔄 Попыток сделано: **${totalAttempts.count}**\n` +
+        `📅 Регистрация: ${fmtDate(user.createdAt)}\n` +
+        `━━━━━━━━━━━━━━━━━━`;
+      
+      await bot.sendMessage(chatId, profileText, { parse_mode: 'Markdown' });
+    }
+    
+    else if (data === 'leaderboard') {
+      await bot.answerCallbackQuery(query.id, { text: '📊 Загрузка рейтинга...' });
+      const top = db.prepare(`
+        SELECT u.fio, MAX(r.score) as bestScore, r.finishedAt 
+        FROM results r 
+        JOIN users u ON r.chatId = u.chatId 
+        WHERE r.status = 'PASS'
+        GROUP BY r.chatId 
+        ORDER BY bestScore DESC, r.finishedAt ASC 
+        LIMIT 10
+      `).all();
+      
+      if (top.length === 0) {
+        await bot.sendMessage(chatId, '🏆 **ТАБЛИЦА ЛИДЕРОВ**\n\nПока никто не сдал экзамен. Будьте первым!');
       } else {
-        await bot.sendMessage(chatId, 'ℹ️ У вас еще нет завершенных экзаменов.');
+        let text = `🏆 **ТОП-10 ЛУЧШИХ РЕЗУЛЬТАТОВ**\n` +
+          `━━━━━━━━━━━━━━━━━━\n`;
+        top.forEach((r, i) => {
+          const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '👤';
+          text += `${medal} **${r.fio}** — ${r.bestScore}/15\n`;
+        });
+        text += `━━━━━━━━━━━━━━━━━━\n_Показаны только те, кто сдал экзамен_`;
+        await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
       }
-    } 
+    }
+    
+    else if (data === 'my_result') {
     
     else if (data === 'show_rules') {
       await bot.answerCallbackQuery(query.id);
@@ -336,18 +365,41 @@ bot.on('callback_query', async (query) => {
   }
 });
 
+// Helper: Show Main Menu
 function showMainMenu(chatId) {
-  bot.sendMessage(chatId, '🏠 **Главное меню**', {
+  const text = `🏠 **ГЛАВНОЕ МЕНЮ**\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `Добро пожаловать в систему аттестации! Выберите нужный раздел:`;
+  
+  bot.sendMessage(chatId, text, {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
         [{ text: '📝 Начать экзамен', callback_data: 'start_exam_rules' }],
-        [{ text: '📊 Мой результат', callback_data: 'my_result' }, { text: 'ℹ️ Правила', callback_data: 'show_rules' }],
+        [{ text: '👤 Мой профиль', callback_data: 'my_profile' }, { text: '🏆 Топ лидеров', callback_data: 'leaderboard' }],
+        [{ text: 'ℹ️ Справка и правила', callback_data: 'show_rules' }],
         isAdmin(chatId) ? [{ text: '⚙️ Админ панель', callback_data: 'admin_panel' }] : []
       ].filter(r => r.length > 0)
     }
   });
 }
+
+// Set Menu Button (WebApp)
+async function setBotMenuButton() {
+  try {
+    await bot.setChatMenuButton({
+      menu_button: JSON.stringify({
+        type: 'web_app',
+        text: '✍️ Экзамен',
+        web_app: { url: `${APP_URL}/exam` }
+      })
+    });
+    console.log('✅ Кнопка меню WebApp успешно установлена');
+  } catch (e) {
+    console.error('❌ Ошибка установки кнопки меню:', e.message);
+  }
+}
+setBotMenuButton();
 
 function showAdminPanel(chatId) {
   const text = `🛠 **ПАНЕЛЬ АДМИНИСТРАТОРА**\n` +

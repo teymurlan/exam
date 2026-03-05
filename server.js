@@ -51,7 +51,7 @@ app.get('/health', (req, res) => {
 
 app.get('/api/status', (req, res) => {
   const { chatId } = req.query;
-  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  if (!chatId) return res.status(400).json({ error: 'ID чата обязателен' });
 
   const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
   if (!user) return res.json({ registered: false });
@@ -69,10 +69,10 @@ app.get('/api/status', (req, res) => {
 
 app.get('/api/questions', (req, res) => {
   const { chatId } = req.query;
-  if (!chatId) return res.status(400).json({ error: 'chatId required' });
+  if (!chatId) return res.status(400).json({ error: 'ID чата обязателен' });
 
   const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
-  if (!user) return res.status(403).json({ error: 'Not registered' });
+  if (!user) return res.status(403).json({ error: 'Вы не зарегистрированы' });
 
   // Check for existing active session
   const existingSession = db.prepare('SELECT * FROM sessions WHERE chatId = ? AND submitted = 0').get(chatId);
@@ -93,7 +93,7 @@ app.get('/api/questions', (req, res) => {
   }
 
   const lastResult = db.prepare('SELECT * FROM results WHERE chatId = ? ORDER BY finishedAt DESC LIMIT 1').get(chatId);
-  if (lastResult && !user.canRetry) return res.status(403).json({ error: 'Exam already taken' });
+  if (lastResult && !user.canRetry) return res.status(403).json({ error: 'Экзамен уже пройден' });
 
   // Create new session
   const token = crypto.randomBytes(16).toString('hex');
@@ -127,7 +127,7 @@ app.get('/api/questions', (req, res) => {
 
 app.post('/api/progress', (req, res) => {
   const { token, chatId, currentIdx, answers } = req.body;
-  if (!token || !chatId) return res.status(400).json({ error: 'Missing data' });
+  if (!token || !chatId) return res.status(400).json({ error: 'Отсутствуют данные' });
 
   db.prepare('UPDATE sessions SET currentIdx = ?, answers = ? WHERE token = ? AND chatId = ?').run(
     currentIdx,
@@ -140,10 +140,10 @@ app.post('/api/progress', (req, res) => {
 
 app.post('/api/submit', async (req, res) => {
   const { token, chatId, answers } = req.body;
-  if (!token || !chatId || !answers) return res.status(400).json({ error: 'Missing data' });
+  if (!token || !chatId || !answers) return res.status(400).json({ error: 'Отсутствуют данные' });
 
   const session = db.prepare('SELECT * FROM sessions WHERE token = ? AND chatId = ?').get(token, chatId);
-  if (!session || session.submitted) return res.status(403).json({ error: 'Invalid or used session' });
+  if (!session || session.submitted) return res.status(403).json({ error: 'Недействительная или уже использованная сессия' });
 
   const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
   const orderMap = JSON.parse(session.orderMap);
@@ -220,128 +220,161 @@ app.get('/exam', (req, res) => {
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         :root {
-            --bg-color: #0f172a;
-            --card-bg: #1e293b;
+            --bg-color: #020617;
+            --card-bg: #0f172a;
+            --card-border: rgba(255, 255, 255, 0.08);
             --text-primary: #f8fafc;
             --text-secondary: #94a3b8;
             --accent-color: #38bdf8;
-            --accent-glow: rgba(56, 189, 248, 0.3);
-            --danger-color: #ef4444;
-            --success-color: #22c55e;
+            --accent-glow: rgba(56, 189, 248, 0.4);
+            --danger-color: #f43f5e;
+            --success-color: #10b981;
+            --font-main: 'Inter', -apple-system, sans-serif;
         }
         body {
-            font-family: 'Inter', -apple-system, sans-serif;
+            font-family: var(--font-main);
             background-color: var(--bg-color);
             color: var(--text-primary);
             margin: 0; padding: 0;
             display: flex; flex-direction: column; min-height: 100vh;
             box-sizing: border-box;
             overflow-x: hidden;
+            -webkit-tap-highlight-color: transparent;
         }
         .container {
             max-width: 500px; margin: 0 auto; width: 100%;
-            padding: 20px; box-sizing: border-box;
+            padding: 24px 20px; box-sizing: border-box;
             display: flex; flex-direction: column; flex: 1;
         }
-        .screen { display: none; flex-direction: column; gap: 24px; animation: fadeIn 0.3s ease; }
+        .screen { display: none; flex-direction: column; gap: 28px; animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
         .screen.active { display: flex; }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
         
-        h1 { font-size: 28px; font-weight: 800; margin: 0; letter-spacing: -0.02em; color: var(--accent-color); }
-        h2 { font-size: 20px; font-weight: 600; margin: 0; line-height: 1.4; }
+        .header { text-align: center; margin-bottom: 8px; }
+        h1 { font-size: 32px; font-weight: 900; margin: 0; letter-spacing: -0.04em; background: linear-gradient(to bottom right, #fff, #94a3b8); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        h2 { font-size: 20px; font-weight: 700; margin: 0; line-height: 1.4; color: #fff; }
         
         .card { 
             background: var(--card-bg); 
-            padding: 24px; 
-            border-radius: 20px; 
-            border: 1px solid rgba(255,255,255,0.05);
-            box-shadow: 0 10px 25px -5px rgba(0,0,0,0.3);
+            padding: 28px; 
+            border-radius: 24px; 
+            border: 1px solid var(--card-border);
+            box-shadow: 0 20px 40px -12px rgba(0,0,0,0.5);
+            position: relative;
+            overflow: hidden;
+        }
+        .card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
         }
         
-        .rules-list { padding: 0; list-style: none; margin: 0; display: flex; flex-direction: column; gap: 12px; }
-        .rules-list li { display: flex; align-items: center; gap: 12px; font-size: 16px; color: var(--text-secondary); }
-        .rules-list li::before { content: "⚡"; color: var(--accent-color); font-size: 14px; }
+        .rules-list { padding: 0; list-style: none; margin: 0; display: flex; flex-direction: column; gap: 16px; }
+        .rules-list li { display: flex; align-items: flex-start; gap: 14px; font-size: 15px; color: var(--text-secondary); line-height: 1.5; }
+        .rules-list li b { color: var(--text-primary); }
+        .rules-list li .icon { flex-shrink: 0; width: 24px; height: 24px; background: rgba(56, 189, 248, 0.1); border-radius: 6px; display: flex; align-items: center; justify-content: center; color: var(--accent-color); font-size: 12px; }
         
         .btn {
             background: var(--accent-color);
-            color: #000;
-            border: none; border-radius: 16px; padding: 18px;
-            font-size: 17px; font-weight: 700; cursor: pointer;
-            text-align: center; transition: all 0.2s ease;
-            box-shadow: 0 4px 15px var(--accent-glow);
+            color: #020617;
+            border: none; border-radius: 18px; padding: 20px;
+            font-size: 17px; font-weight: 800; cursor: pointer;
+            text-align: center; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 8px 20px -4px var(--accent-glow);
+            text-transform: uppercase; letter-spacing: 0.02em;
         }
-        .btn:active { transform: scale(0.98); opacity: 0.9; }
-        .btn:disabled { background: #334155; color: #64748b; box-shadow: none; cursor: not-allowed; }
+        .btn:active { transform: scale(0.96); filter: brightness(0.9); }
+        .btn:disabled { background: #1e293b; color: #475569; box-shadow: none; cursor: not-allowed; }
         
-        .timer-container { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
-        .timer-text { font-family: monospace; font-size: 18px; font-weight: bold; color: var(--accent-color); }
-        .progress-text { font-size: 14px; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+        .timer-container { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 12px; }
+        .timer-text { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 800; color: var(--accent-color); line-height: 1; }
+        .progress-text { font-size: 13px; color: var(--text-secondary); font-weight: 700; text-transform: uppercase; letter-spacing: 0.1em; }
         
-        .timer-bar { height: 8px; background: #1e293b; border-radius: 4px; overflow: hidden; margin-bottom: 24px; border: 1px solid rgba(255,255,255,0.05); }
-        .timer-fill { height: 100%; background: var(--accent-color); transition: width 1s linear; box-shadow: 0 0 10px var(--accent-glow); }
+        .timer-bar { height: 6px; background: #0f172a; border-radius: 10px; overflow: hidden; margin-bottom: 28px; border: 1px solid rgba(255,255,255,0.05); }
+        .timer-fill { height: 100%; background: var(--accent-color); transition: width 1s linear; box-shadow: 0 0 15px var(--accent-glow); }
         
-        .options { display: flex; flex-direction: column; gap: 12px; }
+        .options { display: flex; flex-direction: column; gap: 14px; }
         .option {
-            background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.1);
-            padding: 18px; border-radius: 16px; cursor: pointer;
-            display: flex; align-items: center; gap: 14px;
+            background: rgba(255,255,255,0.02); border: 1px solid var(--card-border);
+            padding: 20px; border-radius: 20px; cursor: pointer;
+            display: flex; align-items: center; gap: 16px;
             transition: all 0.2s ease;
         }
-        .option:hover { background: rgba(255,255,255,0.05); }
-        .option.selected { border-color: var(--accent-color); background: rgba(56, 189, 248, 0.1); }
-        .option-circle { width: 20px; height: 20px; border: 2px solid var(--text-secondary); border-radius: 50%; flex-shrink: 0; transition: all 0.2s ease; }
-        .option.selected .option-circle { border-color: var(--accent-color); background: var(--accent-color); box-shadow: 0 0 8px var(--accent-glow); }
+        .option:hover { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.15); }
+        .option.selected { border-color: var(--accent-color); background: rgba(56, 189, 248, 0.08); box-shadow: inset 0 0 0 1px var(--accent-color); }
+        .option-circle { width: 22px; height: 22px; border: 2px solid #334155; border-radius: 50%; flex-shrink: 0; transition: all 0.2s ease; position: relative; }
+        .option.selected .option-circle { border-color: var(--accent-color); }
+        .option.selected .option-circle::after { content: ''; position: absolute; top: 4px; left: 4px; right: 4px; bottom: 4px; background: var(--accent-color); border-radius: 50%; box-shadow: 0 0 8px var(--accent-glow); }
+        .option span { font-size: 16px; font-weight: 500; line-height: 1.4; }
         
-        .result-icon { font-size: 80px; text-align: center; margin-bottom: 10px; }
-        .status-badge { display: inline-block; padding: 6px 16px; border-radius: 100px; font-size: 14px; font-weight: 700; margin-bottom: 16px; }
-        .status-pass { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
-        .status-fail { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+        .result-icon { font-size: 96px; text-align: center; margin-bottom: 16px; filter: drop-shadow(0 0 20px rgba(255,255,255,0.1)); }
+        .status-badge { display: inline-block; padding: 8px 20px; border-radius: 100px; font-size: 13px; font-weight: 800; margin-bottom: 20px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .status-pass { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.2); }
+        .status-fail { background: rgba(244, 63, 94, 0.15); color: #fb7185; border: 1px solid rgba(244, 63, 94, 0.2); }
+        
+        .loading-overlay { position: fixed; inset: 0; background: var(--bg-color); z-index: 100; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; transition: opacity 0.5s ease; }
+        .spinner { width: 40px; height: 40px; border: 3px solid rgba(56, 189, 248, 0.1); border-top-color: var(--accent-color); border-radius: 50%; animation: spin 1s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
     </style>
 </head>
 <body>
+    <div id="loading" class="loading-overlay">
+        <div class="spinner"></div>
+        <div style="color: var(--text-secondary); font-size: 14px; font-weight: 500;">Загрузка системы...</div>
+    </div>
+
     <div class="container">
         <div id="screen-rules" class="screen active">
-            <h1>CLEANING EXAM</h1>
+            <div class="header">
+                <h1>АТТЕСТАЦИЯ</h1>
+                <div style="color: var(--text-secondary); font-size: 14px; font-weight: 600; letter-spacing: 0.2em; margin-top: 4px;">КЛИНИНГ 2.0</div>
+            </div>
             <div class="card">
-                <h2 style="margin-bottom: 16px;">⚡️ Правила аттестации</h2>
+                <h2 style="margin-bottom: 20px;">⚡️ Регламент экзамена</h2>
                 <ul class="rules-list">
-                    <li><b>15 вопросов</b> по химии и технологиям</li>
-                    <li><b>15 секунд</b> на каждый ответ</li>
-                    <li><b>${PASS_SCORE} баллов</b> для успешной сдачи</li>
-                    <li>Прогресс сохраняется автоматически</li>
+                    <li><div class="icon">01</div><span><b>15 вопросов</b> охватывают химию, безопасность и технику уборки.</span></li>
+                    <li><div class="icon">02</div><span><b>15 секунд</b> на каждый вопрос. Если не успели — ответ считается неверным.</span></li>
+                    <li><div class="icon">03</div><span><b>${PASS_SCORE} баллов</b> — минимальный порог для успешного прохождения.</span></li>
+                    <li><div class="icon">04</div><span><b>Автосохранение:</b> если приложение закроется, вы продолжите с того же места.</span></li>
+                    <li><div class="icon">05</div><span><b>Одна попытка:</b> пересдача возможна только с разрешения администратора.</span></li>
                 </ul>
             </div>
-            <button class="btn" onclick="startExam()">ПРИСТУПИТЬ К ТЕСТУ</button>
+            <button class="btn" onclick="startExam()">Начать аттестацию</button>
         </div>
 
         <div id="screen-exam" class="screen">
             <div class="timer-container">
                 <span class="timer-text" id="timer-text">00:15</span>
-                <span class="progress-text" id="progress-text">QUESTION 01/15</span>
+                <span class="progress-text" id="progress-text">ВОПРОС 01/15</span>
             </div>
             <div class="timer-bar"><div id="timer-fill" class="timer-fill" style="width: 100%"></div></div>
             <div class="card">
-                <h2 id="question-text">Загрузка данных...</h2>
-                <div class="options" id="options-container"></div>
+                <h2 id="question-text" style="min-height: 60px;">Загрузка вопроса...</h2>
+                <div class="options" id="options-container" style="margin-top: 24px;"></div>
             </div>
-            <button class="btn" id="next-btn" onclick="nextQuestion()" disabled>ПОДТВЕРДИТЬ ОТВЕТ</button>
+            <button class="btn" id="next-btn" onclick="nextQuestion()" disabled>Подтвердить выбор</button>
         </div>
 
         <div id="screen-result" class="screen" style="text-align: center;">
             <div class="result-icon" id="result-icon"></div>
             <div id="status-badge-container"></div>
-            <h1 id="result-title" style="color: #fff; margin-bottom: 8px;"></h1>
-            <div class="card" id="result-details" style="margin-bottom: 24px; color: var(--text-secondary);"></div>
-            <button class="btn" onclick="tg.close()">ВЕРНУТЬСЯ В БОТ</button>
+            <h1 id="result-title" style="color: #fff; margin-bottom: 12px; -webkit-text-fill-color: initial; background: none;"></h1>
+            <div class="card" id="result-details" style="margin-bottom: 32px; color: var(--text-secondary); line-height: 1.6;"></div>
+            <button class="btn" onclick="tg.close()">Вернуться в Telegram</button>
         </div>
     </div>
 
     <script>
         const tg = window.Telegram.WebApp;
         tg.expand();
-        tg.backgroundColor = "#0f172a";
-        tg.headerColor = "#0f172a";
+        tg.backgroundColor = "#020617";
+        tg.headerColor = "#020617";
         
+        // Hide loading screen after 1s
+        setTimeout(() => {
+            document.getElementById('loading').style.opacity = '0';
+            setTimeout(() => document.getElementById('loading').style.display = 'none', 500);
+        }, 1000);
+
         const chatId = "${chatId}" || (tg.initDataUnsafe.user ? String(tg.initDataUnsafe.user.id) : null);
         let token = "";
         let questions = [];

@@ -164,13 +164,13 @@ bot.onText(/\/debug/, async (msg) => {
   const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
   const resultsCount = db.prepare('SELECT COUNT(*) as count FROM results WHERE chatId = ?').get(chatId);
   
-  let debugInfo = `🛠 **Debug Info:**\n\n`;
-  debugInfo += `🆔 Chat ID: <code>${chatId}</code>\n`;
-  debugInfo += `👤 User: ${user ? user.fio : 'Not found'}\n`;
-  debugInfo += `📞 Phone: ${user ? user.phone : 'N/A'}\n`;
-  debugInfo += `📊 Results count: ${resultsCount.count}\n`;
-  debugInfo += `🔄 Can Retry: ${user ? (user.canRetry ? 'Yes' : 'No') : 'N/A'}\n`;
-  debugInfo += `🌐 APP_URL: <code>${APP_URL}</code>\n`;
+  let debugInfo = `🛠 **Техническая информация:**\n\n`;
+  debugInfo += `🆔 ID чата: <code>${chatId}</code>\n`;
+  debugInfo += `👤 Пользователь: ${user ? user.fio : 'Не найден'}\n`;
+  debugInfo += `📞 Телефон: ${user ? user.phone : 'Н/A'}\n`;
+  debugInfo += `📊 Кол-во результатов: ${resultsCount.count}\n`;
+  debugInfo += `🔄 Можно пересдать: ${user ? (user.canRetry ? 'Да' : 'Нет') : 'Н/A'}\n`;
+  debugInfo += `🌐 URL приложения: <code>${APP_URL}</code>\n`;
   
   await bot.sendMessage(chatId, debugInfo, { parse_mode: 'HTML' });
 });
@@ -408,7 +408,7 @@ bot.on('callback_query', async (query) => {
           let text = `📋 **ПОСЛЕДНИЕ 10 РЕЗУЛЬТАТОВ**\n\n`;
           last.forEach((r, i) => {
             text += `${i+1}. ${r.status === 'PASS' ? '✅' : '❌'} **${r.fio}**\n` +
-                    `   Score: ${r.score}/${r.total} | 🕒 ${fmtDate(r.finishedAt)}\n` +
+                    `   Баллы: ${r.score}/${r.total} | 🕒 ${fmtDate(r.finishedAt)}\n` +
                     `   ID: <code>${r.chatId}</code>\n\n`;
           });
           await bot.sendMessage(chatId, text, { parse_mode: 'HTML' });

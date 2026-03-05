@@ -76,6 +76,7 @@ const userStates = new Map();
 // Bot Commands
 bot.onText(/\/start/, async (msg) => {
   const chatId = String(msg.chat.id);
+  console.log(`[DEBUG] /start received from ${chatId}`);
   const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
 
   if (!user) {
@@ -84,6 +85,22 @@ bot.onText(/\/start/, async (msg) => {
   } else {
     showMainMenu(chatId);
   }
+});
+
+bot.onText(/\/debug/, async (msg) => {
+  const chatId = String(msg.chat.id);
+  const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
+  const resultsCount = db.prepare('SELECT COUNT(*) as count FROM results WHERE chatId = ?').get(chatId);
+  
+  let debugInfo = `🛠 **Debug Info:**\n\n`;
+  debugInfo += `🆔 Chat ID: <code>${chatId}</code>\n`;
+  debugInfo += `👤 User: ${user ? user.fio : 'Not found'}\n`;
+  debugInfo += `📞 Phone: ${user ? user.phone : 'N/A'}\n`;
+  debugInfo += `📊 Results count: ${resultsCount.count}\n`;
+  debugInfo += `🔄 Can Retry: ${user ? (user.canRetry ? 'Yes' : 'No') : 'N/A'}\n`;
+  debugInfo += `🌐 APP_URL: <code>${APP_URL}</code>\n`;
+  
+  await bot.sendMessage(chatId, debugInfo, { parse_mode: 'HTML' });
 });
 
 bot.onText(/\/admin/, (msg) => {
@@ -162,6 +179,7 @@ bot.on('polling_error', (error) => {
 
 // Inline Buttons Handling
 bot.on('callback_query', async (query) => {
+  bot.answerCallbackQuery(query.id).catch(() => {});
   if (!query.message) return;
   const chatId = String(query.message.chat.id);
   const data = query.data;
@@ -265,8 +283,6 @@ bot.on('callback_query', async (query) => {
   } catch (err) {
     console.error(`[ERROR] Callback handler failed: ${err.message}`);
   }
-
-  bot.answerCallbackQuery(query.id).catch(() => {});
 });
 
 function showMainMenu(chatId) {

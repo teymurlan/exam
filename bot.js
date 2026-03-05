@@ -25,6 +25,10 @@ if (!TOKEN) {
   process.exit(1);
 }
 
+if (!APP_URL) {
+  console.warn('⚠️ APP_URL is missing in ENV. WebApp features may not work correctly.');
+}
+
 // Database setup
 const db = new Database('data.db');
 db.exec(`
@@ -49,7 +53,9 @@ db.exec(`
     chatId TEXT,
     createdAt INTEGER,
     submitted INTEGER DEFAULT 0,
-    orderMap TEXT
+    orderMap TEXT,
+    currentIdx INTEGER DEFAULT 0,
+    answers TEXT DEFAULT '[]'
   );
 `);
 
@@ -86,11 +92,71 @@ bot.onText(/\/start/, async (msg) => {
   const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
 
   if (!user) {
-    bot.sendMessage(chatId, '👋 Добро пожаловать! Для начала работы необходимо зарегистрироваться.\n\nВведите ваше **ФИО**:');
+    bot.sendMessage(chatId, '👋 **Добро пожаловать!**\n\nДля начала работы необходимо зарегистрироваться.\n\nВведите ваше **ФИО**:');
     userStates.set(chatId, { step: 'fio' });
   } else {
     showMainMenu(chatId);
   }
+});
+
+bot.onText(/\/menu/, (msg) => showMainMenu(String(msg.chat.id)));
+
+bot.onText(/\/profile/, async (msg) => {
+  const chatId = String(msg.chat.id);
+  const user = db.prepare('SELECT * FROM users WHERE chatId = ?').get(chatId);
+  if (!user) return bot.sendMessage(chatId, '❌ Сначала зарегистрируйтесь: /start');
+  
+  const bestResult = db.prepare('SELECT MAX(score) as maxScore FROM results WHERE chatId = ?').get(chatId);
+  const totalAttempts = db.prepare('SELECT COUNT(*) as count FROM results WHERE chatId = ?').get(chatId);
+  
+  const profileText = `👤 **ВАШ ПРОФИЛЬ**\n` +
+    `━━━━━━━━━━━━━━━━━━\n` +
+    `📝 ФИО: **${user.fio}**\n` +
+    `📞 Тел: \`${user.phone}\`\n` +
+    `🏆 Лучший результат: **${bestResult.maxScore || 0} / 15**\n` +
+    `🔄 Попыток сделано: **${totalAttempts.count}**\n` +
+    `📅 Регистрация: ${fmtDate(user.createdAt)}\n` +
+    `━━━━━━━━━━━━━━━━━━`;
+  
+  await bot.sendMessage(chatId, profileText, { parse_mode: 'Markdown' });
+});
+
+bot.onText(/\/top/, async (msg) => {
+  const chatId = String(msg.chat.id);
+  const top = db.prepare(`
+    SELECT u.fio, MAX(r.score) as bestScore 
+    FROM results r 
+    JOIN users u ON r.chatId = u.chatId 
+    WHERE r.status = 'PASS'
+    GROUP BY r.chatId 
+    ORDER BY bestScore DESC 
+    LIMIT 10
+  `).all();
+  
+  if (top.length === 0) {
+    await bot.sendMessage(chatId, '🏆 **ТАБЛИЦА ЛИДЕРОВ**\n\nПока никто не сдал экзамен.');
+  } else {
+    let text = `🏆 **ТОП-10 ЛУЧШИХ**\n` +
+      `━━━━━━━━━━━━━━━━━━\n`;
+    top.forEach((r, i) => {
+      const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : '👤';
+      text += `${medal} **${r.fio}** — ${r.bestScore}/15\n`;
+    });
+    await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+  }
+});
+
+bot.onText(/\/help/, (msg) => {
+  const chatId = msg.chat.id;
+  const helpText = `📖 **СПРАВКА ПО БОТУ**\n\n` +
+    `🔹 **/start** — Главное меню\n` +
+    `🔹 **/menu** — Быстрый вызов меню\n` +
+    `🔹 **/profile** — Личный профиль\n` +
+    `🔹 **/top** — Таблица лидеров\n` +
+    `🔹 **/debug** — Тех. информация\n\n` +
+    `**Как пройти экзамен?**\n` +
+    `Нажмите "📝 Начать экзамен" и следуйте инструкциям. Если вы закроете приложение, ваш прогресс сохранится!`;
+  bot.sendMessage(chatId, helpText, { parse_mode: 'Markdown' });
 });
 
 bot.onText(/\/debug/, async (msg) => {
@@ -293,6 +359,20 @@ bot.on('callback_query', async (query) => {
     }
     
     else if (data === 'my_result') {
+      await bot.answerCallbackQuery(query.id);
+      const result = db.prepare('SELECT * FROM results WHERE chatId = ? ORDER BY finishedAt DESC LIMIT 1').get(chatId);
+      if (result) {
+        const text = `📊 **ПОСЛЕДНИЙ РЕЗУЛЬТАТ**\n` +
+          `━━━━━━━━━━━━━━━━━━\n` +
+          `🎯 Баллы: **${result.score} / ${result.total}**\n` +
+          `📢 Статус: ${result.status === 'PASS' ? '✅ СДАНО' : '❌ НЕ СДАНО'}\n` +
+          `📅 Дата: ${fmtDate(result.finishedAt)}\n` +
+          `━━━━━━━━━━━━━━━━━━`;
+        await bot.sendMessage(chatId, text, { parse_mode: 'Markdown' });
+      } else {
+        await bot.sendMessage(chatId, 'ℹ️ У вас еще нет завершенных экзаменов.');
+      }
+    }
     
     else if (data === 'show_rules') {
       await bot.answerCallbackQuery(query.id);
@@ -377,7 +457,7 @@ function showMainMenu(chatId) {
       inline_keyboard: [
         [{ text: '📝 Начать экзамен', callback_data: 'start_exam_rules' }],
         [{ text: '👤 Мой профиль', callback_data: 'my_profile' }, { text: '🏆 Топ лидеров', callback_data: 'leaderboard' }],
-        [{ text: 'ℹ️ Справка и правила', callback_data: 'show_rules' }],
+        [{ text: '📊 Последний результат', callback_data: 'my_result' }, { text: 'ℹ️ Справка и правила', callback_data: 'show_rules' }],
         isAdmin(chatId) ? [{ text: '⚙️ Админ панель', callback_data: 'admin_panel' }] : []
       ].filter(r => r.length > 0)
     }
